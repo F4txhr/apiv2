@@ -1,0 +1,11 @@
+services:
+  vpn-api:
+    build: .
+    container_name: vpn-tools-api
+    ports:
+      - "8000:8000"
+    restart: always
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
