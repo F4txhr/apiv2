@@ -6,3 +6,6 @@ httpx
 qrcode
 pillow
 psutil
+slowapi
+ping3
+user-agents

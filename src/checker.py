@@ -1,7 +1,8 @@
 import socket
 import time
 import httpx
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from ping3 import ping
 
 # Simple in-memory cache: {ip: (data, timestamp)}
 _geoip_cache: Dict[str, Any] = {}
@@ -9,7 +10,6 @@ CACHE_TTL = 600  # 10 minutes
 
 def get_cache_stats() -> Dict[str, int]:
     """Returns statistics about the GeoIP cache."""
-    # Optional: Clean up expired items lazily or just return current count
     return {"size": len(_geoip_cache)}
 
 def check_connection(host: str, port: int, timeout: int = 3):
@@ -34,6 +34,28 @@ def check_connection(host: str, port: int, timeout: int = 3):
             "status": "closed",
             "latency_ms": None
         }
+
+def icmp_ping(host: str, count: int = 1, timeout: int = 2) -> Dict[str, Any]:
+    """Performs ICMP ping."""
+    try:
+        # ping returns delay in seconds or None/False
+        delay = ping(host, timeout=timeout, unit="ms")
+        if delay is None or delay is False:
+             return {"host": host, "status": "unreachable", "latency_ms": None}
+        return {"host": host, "status": "reachable", "latency_ms": round(delay, 2)}
+    except Exception as e:
+        return {"host": host, "status": "error", "error": str(e)}
+
+def port_scan(host: str, ports: List[int], timeout: int = 1) -> Dict[str, Any]:
+    """Scans multiple ports on a host."""
+    results = {}
+    for port in ports:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                results[port] = "open"
+        except:
+            results[port] = "closed"
+    return {"host": host, "scan_results": results}
 
 async def get_geoip(ip: str) -> Optional[Dict[str, Any]]:
     """
