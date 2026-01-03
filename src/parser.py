@@ -18,6 +18,23 @@ def safe_base64_decode(s: str) -> str:
         # But base64.b64decode handles standard +/
         return base64.b64decode(s).decode("utf-8")
 
+def decode_if_base64(s: str) -> str:
+    """Attempts to decode a string if it's a valid Base64 blob, otherwise returns original."""
+    s = s.strip()
+    # Basic heuristic: no spaces, length multiple of 4 (with padding), only valid b64 chars
+    if " " in s or len(s) < 4:
+        return s
+        
+    try:
+        # Try decoding
+        decoded = safe_base64_decode(s)
+        # Check if the result looks like meaningful text (e.g. contains protocol prefixes)
+        if any(p in decoded for p in ["vmess://", "vless://", "trojan://", "ss://", "hy2://", "tuic://"]):
+            return decoded
+        return s
+    except Exception:
+        return s
+
 def parse_vmess(link: str) -> Optional[Dict[str, Any]]:
     """Parses a vmess:// link."""
     try:
@@ -190,6 +207,67 @@ def parse_ss(link: str) -> Optional[Dict[str, Any]]:
         print(f"Error parsing ss {link}: {e}")
         return None
 
+def parse_hysteria2(link: str) -> Optional[Dict[str, Any]]:
+    """Parses hy2:// links."""
+    try:
+        parsed = urllib.parse.urlparse(link)
+        if parsed.scheme != "hy2":
+            return None
+        
+        query = urllib.parse.parse_qs(parsed.query)
+        
+        data = {
+            "type": "hysteria2",
+            "name": urllib.parse.unquote(parsed.fragment) or "hy2_proxy",
+            "server": parsed.hostname,
+            "port": parsed.port,
+            "password": parsed.username, # Hysteria2 auth payload is in username
+            "sni": query.get("sni", [""])[0],
+            "insecure": query.get("insecure", ["0"])[0] == "1",
+            "obfs": query.get("obfs", [""])[0],
+            "obfs_password": query.get("obfs-password", [""])[0]
+        }
+        
+        if not data["sni"]:
+             data["sni"] = data["server"]
+
+        return data
+    except Exception as e:
+        print(f"Error parsing hy2 {link}: {e}")
+        return None
+
+def parse_tuic(link: str) -> Optional[Dict[str, Any]]:
+    """Parses tuic:// links."""
+    try:
+        parsed = urllib.parse.urlparse(link)
+        if parsed.scheme != "tuic":
+            return None
+        
+        query = urllib.parse.parse_qs(parsed.query)
+        
+        data = {
+            "type": "tuic",
+            "name": urllib.parse.unquote(parsed.fragment) or "tuic_proxy",
+            "server": parsed.hostname,
+            "port": parsed.port,
+            "uuid": parsed.username, 
+            "password": parsed.password, 
+            "sni": query.get("sni", [""])[0],
+            "congestion_control": query.get("congestion_control", ["bbr"])[0],
+            "udp_relay_mode": query.get("udp_relay_mode", ["native"])[0],
+            "alpn": query.get("alpn", ["h3"])[0],
+            "disable_sni": query.get("disable_sni", ["0"])[0] == "1",
+            "insecure": query.get("allow_insecure", ["0"])[0] == "1"
+        }
+        
+        if not data["sni"] and not data["disable_sni"]:
+             data["sni"] = data["server"]
+             
+        return data
+    except Exception as e:
+        print(f"Error parsing tuic {link}: {e}")
+        return None
+
 def parse_link(link: str) -> Optional[Dict[str, Any]]:
     link = link.strip()
     if link.startswith("vmess://"):
@@ -198,4 +276,8 @@ def parse_link(link: str) -> Optional[Dict[str, Any]]:
         return parse_vless_trojan(link)
     elif link.startswith("ss://"):
         return parse_ss(link)
+    elif link.startswith("hy2://"):
+        return parse_hysteria2(link)
+    elif link.startswith("tuic://"):
+        return parse_tuic(link)
     return None

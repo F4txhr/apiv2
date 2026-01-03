@@ -1,34 +1,59 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Body, Query, Header
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, List
 import time
 import os
-from src.checker import check_connection, get_geoip
-from src.parser import parse_link
+import psutil
+from src.checker import check_connection, get_geoip, get_cache_stats
+from src.parser import parse_link, decode_if_base64
 from src.converter import to_clash, to_singbox
 from src.qr_utils import generate_qr_image
 
 app = FastAPI()
 start_time = time.time()
 
-class ConvertRequest(BaseModel):
-    data: str  # text containing links
-    target: str # 'clash' or 'singbox'
+# Request Counters
+stats_counters = {
+    "total_requests": 0,
+    "check_requests": 0,
+    "sub_requests": 0,
+    "qr_requests": 0
+}
+
+@app.middleware("http")
+async def count_requests(request, call_next):
+    stats_counters["total_requests"] += 1
+    response = await call_next(request)
+    return response
 
 @app.get("/stats")
 def get_stats():
-    """Returns the status and uptime of the API."""
+    """Returns the status, uptime, resource usage, and traffic stats."""
     uptime_seconds = time.time() - start_time
+    
+    # System Resources
+    cpu_usage = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory()
+    
     return {
         "status": "running",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "uptime_seconds": round(uptime_seconds, 2),
-        "uptime_human": f"{round(uptime_seconds / 60, 2)} minutes"
+        "uptime_human": f"{round(uptime_seconds / 60, 2)} minutes",
+        "system": {
+            "cpu_percent": cpu_usage,
+            "ram_percent": ram.percent,
+            "ram_used_mb": round(ram.used / 1024 / 1024, 2),
+            "ram_total_mb": round(ram.total / 1024 / 1024, 2)
+        },
+        "traffic": stats_counters,
+        "cache": get_cache_stats()
     }
 
 @app.get("/check")
 async def check_ip(ip: str, port: int, timeout: int = 3):
+    stats_counters["check_requests"] += 1
     # TCP check (run in threadpool to avoid blocking event loop)
     result = await run_in_threadpool(check_connection, ip, port, timeout)
     
@@ -40,9 +65,28 @@ async def check_ip(ip: str, port: int, timeout: int = 3):
              
     return result
 
-@app.post("/convert")
-def convert_config(request: ConvertRequest):
-    links = request.data.strip().splitlines()
+@app.post("/sub")
+def subscription_endpoint(
+    data: str = Body(..., embed=True), 
+    target: str = Body("auto", embed=True),
+    download: bool = Query(False),
+    full: bool = Query(False),
+    user_agent: Optional[str] = Header(None)
+):
+    """
+    Consolidated endpoint for converting and subscribing to VPN configs.
+    
+    - data: List of links separated by newlines (or a single base64 encoded string).
+    - target: 'clash', 'singbox', or 'auto' (detect based on User-Agent).
+    - download: If true, forces file download.
+    - full: If true, returns a full config (Rules/DNS) instead of just proxy list.
+    """
+    stats_counters["sub_requests"] += 1
+    
+    # Try decoding if it looks like a single base64 block
+    decoded_data = decode_if_base64(data)
+    
+    links = decoded_data.strip().splitlines()
     parsed_list = []
     
     for link in links:
@@ -56,16 +100,47 @@ def convert_config(request: ConvertRequest):
     if not parsed_list:
         raise HTTPException(status_code=400, detail="No valid links found")
 
-    if request.target.lower() == "clash":
-        return {"config": to_clash(parsed_list), "format": "yaml"}
-    elif request.target.lower() == "singbox":
-        return {"config": to_singbox(parsed_list), "format": "json"}
+    # Auto-detect target if 'auto'
+    final_target = target.lower()
+    if final_target == "auto":
+        ua = (user_agent or "").lower()
+        if "clash" in ua or "mihomo" in ua:
+            final_target = "clash"
+        elif "sing-box" in ua or "singbox" in ua or "neko" in ua:
+            final_target = "singbox"
+        else:
+            # Default fallback if unknown
+            final_target = "clash"
+
+    content = ""
+    media_type = ""
+    filename = ""
+
+    if final_target == "clash":
+        content = to_clash(parsed_list, full=full)
+        media_type = "application/x-yaml" if download else "text/yaml"
+        filename = "config.yaml"
+    elif final_target == "singbox":
+        content = to_singbox(parsed_list, full=full)
+        media_type = "application/json"
+        filename = "config.json"
     else:
         raise HTTPException(status_code=400, detail="Unsupported target. Use 'clash' or 'singbox'")
+
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f"attachment; filename={filename}"
+
+    return Response(
+        content=content, 
+        media_type=media_type,
+        headers=headers
+    )
 
 @app.get("/qr")
 def get_qr(text: str):
     """Generates a QR code for the given text."""
+    stats_counters["qr_requests"] += 1
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
     

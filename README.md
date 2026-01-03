@@ -4,10 +4,13 @@ This project provides a FastAPI-based service for checking IP:Port connectivity 
 
 ## Features
 
-- **IP Checker:** Verify if a specific TCP port is open on a host. **Now includes GeoIP information!** 🌍
-- **Config Converter:** Convert `vmess://`, `vless://`, `trojan://`, and `ss://` (Shadowsocks) links into Clash (YAML) or Sing-box (JSON) configurations.
+- **IP Checker:** Verify if a specific TCP port is open on a host. **Now includes GeoIP information!** 🌍 (With smart caching)
+- **Smart Subscription:** Convert one or multiple VPN links (VMess, VLESS, Trojan, SS, Hysteria2, Tuic) into a consolidated subscription config.
+  - **Auto Import:** Can automatically detect and decode raw Base64 subscription blobs.
+  - **Auto-Detect Format:** If `target` is not specified, it detects the requested format based on User-Agent (Clash/Mihomo vs Sing-box). 🪄
+  - **Full Config Mode:** Add `?full=true` to generate a complete configuration with Rules, DNS, and Proxy Groups (ready to use). ⚙️
+  - **Flexible Output:** Supports direct display or file download.
 - **QR Code Generator:** Convert any text or config link into a QR Code image. 📱
-- **Health Stats:** Monitor API uptime and status via `/stats`.
 
 ## Installation
 
@@ -34,8 +37,6 @@ This method is perfect for VPS deployment (including Alibaba Cloud).
 3. Run the server:
    ```bash
    python -m src.main
-   # OR
-   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
 ## Deployment with Domain Name 🌐
@@ -48,7 +49,7 @@ To use a domain (e.g., `api.example.com`) instead of the VPS IP:
 
 2. **Server Setup:**
    - Just run `docker compose up -d` as usual.
-   - The included Nginx is configured to accept requests from **any domain name** pointing to the server.
+   - The included Nginx is configured to accept requests from domains starting with `api.` (e.g. `api.yoursite.com`). Requests from other domains or direct IP will return 404.
 
 ## Usage
 
@@ -84,30 +85,34 @@ curl "http://api.example.com/check?ip=1.1.1.1&port=53"
 }
 ```
 
-### 2. Convert Config
+### 2. Subscription / Convert Config
 
-**Endpoint:** `POST /convert`
+**Endpoint:** `POST /sub`
 
 **Body:**
-- `data`: String containing one or more VPN links (separated by newlines). Supported formats: VMess, VLESS, Trojan, Shadowsocks (`ss://`).
-- `target`: Target format (`clash` or `singbox`).
+- `data`: String containing one or more VPN links (separated by newlines). Supported formats: VMess, VLESS, Trojan, Shadowsocks (`ss://`), Hysteria2 (`hy2://`), Tuic (`tuic://`). **Also supports raw Base64 subscription blobs.**
+- `target`: Target format (`clash`, `singbox`, or `auto`). Default is `auto`.
+- `download`: (Optional) Set to `true` to download as file. Default is `false` (display in browser).
+- `full`: (Optional) Set to `true` to return a full ready-to-use config with Rules & DNS. Default is `false`.
 
-**Example:**
+**Example 1: Auto-Detect (Magic Link)**
+Just put the URL in your app (Clash or Sing-box). The API will detect the app and serve the correct format.
 ```bash
-curl -X POST "http://api.example.com/convert" \
+curl -X POST "http://api.example.com/sub" \
+     -H "User-Agent: Clash/1.0" \
+     -d '{ "data": "ss://..." }'
+# Returns YAML
+```
+
+**Example 2: Full Config Download**
+```bash
+curl -X POST "http://api.example.com/sub?download=true&full=true" \
      -H "Content-Type: application/json" \
      -d '{
            "target": "clash",
-           "data": "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@1.1.1.1:8388#Shadowsocks"
+           "data": "ss://YWVz...\nvless://uuid..."
          }'
-```
-
-**Response:**
-```json
-{
-  "config": "proxies:\n  - name: Shadowsocks...",
-  "format": "yaml"
-}
+# Returns attachment: config.yaml with Rules, DNS, Proxy Groups
 ```
 
 ### 3. Generate QR Code
