@@ -2,16 +2,29 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import Optional, List
+import time
 from src.checker import check_connection, get_geoip
 from src.parser import parse_link
 from src.converter import to_clash, to_singbox
 from src.qr_utils import generate_qr_image
 
 app = FastAPI()
+start_time = time.time()
 
 class ConvertRequest(BaseModel):
     data: str  # text containing links
     target: str # 'clash' or 'singbox'
+
+@app.get("/stats")
+def get_stats():
+    """Returns the status and uptime of the API."""
+    uptime_seconds = time.time() - start_time
+    return {
+        "status": "running",
+        "version": "1.0.0",
+        "uptime_seconds": round(uptime_seconds, 2),
+        "uptime_human": f"{round(uptime_seconds / 60, 2)} minutes"
+    }
 
 @app.get("/check")
 async def check_ip(ip: str, port: int, timeout: int = 3):

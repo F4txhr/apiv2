@@ -2,10 +2,19 @@ services:
   vpn-api:
     build: .
     container_name: vpn-tools-api
-    ports:
-      - "8000:8000"
     restart: always
     volumes:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+
+  nginx:
+    image: nginx:alpine
+    container_name: vpn-tools-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - vpn-api
+    restart: always
