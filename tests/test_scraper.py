@@ -4,7 +4,7 @@ from unittest.mock import patch, AsyncMock
 
 client = TestClient(app)
 
-@patch("src.scraper.fetch_url")
+@patch("src.scraper.fetch_url", new_callable=AsyncMock)
 def test_free_accounts_scraper(mock_fetch):
     # Mock GitHub response
     mock_fetch.return_value = "vmess://eyJhZGQiOiAiMS4xLjEuMSIsICJwb3J0IjogNDQzLCAiaWQiOiAidXVpZCIsICJuZXQiOiAid3MiLCAicHMiOiAiRnJlZSBTZXJ2ZXIifQ=="

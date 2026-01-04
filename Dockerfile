@@ -19,5 +19,6 @@ EXPOSE 8000
 # Define environment variable
 ENV PYTHONUNBUFFERED=1
 
-# Run the application using uvicorn
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application using uvicorn with proxy headers enabled
+# Essential for running behind Nginx to get real client IP
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
