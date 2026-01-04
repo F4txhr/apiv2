@@ -9,3 +9,10 @@ psutil
 slowapi
 ping3
 user-agents
+sqlalchemy
+passlib
+python-jose
+jinja2
+python-telegram-bot[job-queue]
+bcrypt
+python-multipart

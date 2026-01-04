@@ -104,17 +104,12 @@ def _get_singbox_template():
 def apply_modifiers(proxies: List[Dict[str, Any]], options: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Applies filters and modifiers to the list of proxies.
-    Options:
-    - filter_name: regex string to include
-    - exclude_name: regex string to exclude
-    - filter_protocol: string (vmess, vless, etc.)
-    - force_sni: string to overwrite sni/host
-    - udp_toggle: bool to force enable/disable udp
-    - remove_expired: bool (checks regex YYYY-MM-DD in name)
-    - add_emoji: bool (requires GeoIP data passed in? Skipping strictly here as it needs async/IP checking which is slow for bulk. Can be done if IP is known or simple lookup)
     """
     result = []
     import datetime
+
+    auto_rename = options.get("auto_rename", False)
+    rename_counter = 1
 
     for p in proxies:
         # 1. Protocol Filter
@@ -145,22 +140,18 @@ def apply_modifiers(proxies: List[Dict[str, Any]], options: Dict[str, Any]) -> L
         # 5. Force SNI/Host
         if options.get("force_sni"):
             sni = options["force_sni"]
-            # Apply to known fields based on protocol
             if "sni" in p: p["sni"] = sni
             if "host" in p: p["host"] = sni
-            if "servername" in p: p["servername"] = sni # clash vless
-            # Also update plugin/transport opts if possible? 
-            # Simplified: just top level SNI usually fixes most things.
+            if "servername" in p: p["servername"] = sni 
 
         # 6. UDP Toggle
         if "udp_toggle" in options:
-            p["udp"] = options["udp_toggle"] # For Clash
-            # For Sing-box/Internal format, udp isn't always explicit in `p`, but `to_clash` uses it.
-            # We add it to internal dict so converters can use it.
+            p["udp"] = options["udp_toggle"]
 
-        # 7. Add Emoji (Simplified: just mock logic for now or skip if too complex without IP db)
-        # Real implementation would need an IP-to-Country DB loaded. 
-        # Skipping to keep it fast and synchronous.
+        # 7. Auto Rename
+        if auto_rename:
+            p["name"] = f"Server-{rename_counter:02d}"
+            rename_counter += 1
 
         result.append(p)
         
@@ -180,7 +171,6 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
             "port": p["port"],
         }
         
-        # Apply generic UDP override if present
         if "udp" in p:
             proxy["udp"] = p["udp"]
         
@@ -209,7 +199,6 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
             if p.get("sni"):
                 proxy["servername"] = p["sni"]
             
-            # Handle transport options
             if p.get("path") and p.get("network") in ["ws", "h2", "grpc"]:
                  proxy[f"{p['network']}-opts"] = {"path": p["path"]}
                  if p.get("host"):
@@ -233,7 +222,6 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                     proxy["plugin-opts"] = p["plugin_opts"]
 
         elif p["type"] == "hysteria2":
-             # Clash Meta (Mihomo) uses 'hysteria2'
              proxy["password"] = p["password"]
              if p.get("sni"):
                  proxy["sni"] = p["sni"]
@@ -245,7 +233,6 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
              if "udp" not in proxy: proxy["udp"] = True
 
         elif p["type"] == "tuic":
-             # Clash Meta (Mihomo) uses 'tuic'
              proxy["uuid"] = p["uuid"]
              proxy["password"] = p["password"]
              if p.get("sni"):
@@ -255,7 +242,7 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
              proxy["congestion-controller"] = p.get("congestion_control", "bbr")
              proxy["udp-relay-mode"] = p.get("udp_relay_mode", "native")
              if p.get("alpn"):
-                 proxy["alpn"] = [p["alpn"]] # Clash expects list
+                 proxy["alpn"] = [p["alpn"]]
              if p.get("disable_sni"):
                  proxy["disable-sni"] = True
              if "udp" not in proxy: proxy["udp"] = True
@@ -267,7 +254,6 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
         import copy
         config = copy.deepcopy(CLASH_FULL_TEMPLATE)
         config["proxies"] = clash_proxies
-        # Add proxies to groups
         for group in config["proxy-groups"]:
             if group["name"] in ["PROXY", "AUTO"]:
                 group["proxies"].extend(proxy_names)
@@ -300,7 +286,6 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                 transport["path"] = p.get("path")
                 if p.get("host"):
                      transport["headers"] = {"Host": p.get("host")}
-            
             if transport:
                 outbound["transport"] = transport
 
@@ -316,7 +301,6 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                      tls_conf["server_name"] = p.get("sni")
              outbound["tls"] = tls_conf
              
-             # simplified transport handling
              if p.get("network") == "ws":
                  outbound["transport"] = {"type": "ws", "path": p.get("path")}
 
@@ -328,15 +312,12 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                  outbound["tls"] = {"enabled": True}
 
         elif p["type"] == "ss":
-            outbound["type"] = "shadowsocks" # sing-box uses 'shadowsocks' instead of 'ss'
+            outbound["type"] = "shadowsocks" 
             outbound["method"] = p["cipher"]
             outbound["password"] = p["password"]
             
-            # Map SS plugins to Sing-box transport
             if p.get("plugin") == "v2ray-plugin":
                  opts = p.get("plugin_opts", {})
-                 # v2ray-plugin usually implies websocket or quic
-                 # mode=websocket is default or explicit
                  mode = opts.get("mode", "websocket")
                  
                  transport = {}
@@ -346,9 +327,6 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                          transport["path"] = opts.get("path")
                      if opts.get("host"):
                          transport["headers"] = {"Host": opts.get("host")}
-                         
-                 # Only add transport if we successfully mapped it. 
-                 # Sing-box doesn't support generic 'plugin' binary execution in the same way.
                  if transport:
                      outbound["transport"] = transport
 
@@ -359,7 +337,6 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
                      "type": p["obfs"],
                      "password": p.get("obfs_password")
                  }
-             
              tls = {"enabled": True}
              if p.get("sni"):
                  tls["server_name"] = p["sni"]
@@ -391,11 +368,9 @@ def to_singbox(proxies: List[Dict[str, Any]], full: bool = False) -> str:
         config = _get_singbox_template()
         for ob in reversed(outbounds):
             config["outbounds"].insert(0, ob)
-            
         for ob in config["outbounds"]:
             if ob["tag"] in ["PROXY", "AUTO"] and "outbounds" in ob:
                 ob["outbounds"].extend(proxy_tags)
-                
         return json.dumps(config, indent=2)
     else:
         return json.dumps({"outbounds": outbounds}, indent=2)

@@ -7,6 +7,19 @@ services:
       - .:/app
     environment:
       - PYTHONUNBUFFERED=1
+      # - API_KEY=your_secret_key_here
+
+  bot:
+    build: .
+    container_name: vpn-tools-bot
+    command: python -m src.bot
+    restart: always
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
 
   nginx:
     image: nginx:alpine

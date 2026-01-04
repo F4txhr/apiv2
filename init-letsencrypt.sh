@@ -17,7 +17,7 @@ if [ -z "$EMAIL" ] || [ "$EMAIL" = "your-email@example.com" ]; then
   exit 1
 fi
 
-# Update Nginx Configuration with actual domain
+# Update Nginx Configuration with actual domain initially to ensure Nginx starts
 echo "### Updating Nginx configuration with domain $DOMAIN ..."
 sed -i "s/REPLACE_WITH_DOMAIN/$DOMAIN/g" nginx/default.conf
 
@@ -85,6 +85,22 @@ docker compose run --rm --entrypoint "\
     --agree-tos \
     --force-renewal" certbot
 echo
+
+echo "### Checking for actual certificate path (handling -0001 suffix) ..."
+# Find the directory that contains the privkey.pem for the domain
+# We look in the local ./certbot/conf/live folder
+# The 'ls -d' will list directories matching the domain pattern
+# 'head -n 1' takes the first match
+ACTUAL_CERT_DIR=$(ls -d ./certbot/conf/live/$DOMAIN* | head -n 1)
+CERT_NAME=$(basename "$ACTUAL_CERT_DIR")
+
+if [ -n "$CERT_NAME" ] && [ "$CERT_NAME" != "$DOMAIN" ]; then
+  echo "### Detected certificate suffix: $CERT_NAME. Updating Nginx config ..."
+  # Replace the original domain path with the suffixed path in nginx.conf
+  # We match /etc/letsencrypt/live/DOMAIN/ and replace with /etc/letsencrypt/live/CERT_NAME/
+  # Note: The nginx config inside the container uses /etc/letsencrypt, which maps to ./certbot/conf
+  sed -i "s|/etc/letsencrypt/live/$DOMAIN/|/etc/letsencrypt/live/$CERT_NAME/|g" nginx/default.conf
+fi
 
 echo "### Reloading nginx ..."
 docker compose exec nginx nginx -s reload

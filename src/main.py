@@ -1,20 +1,27 @@
-from fastapi import FastAPI, HTTPException, Response, Body, Query, Header, Request
+from fastapi import FastAPI, HTTPException, Response, Body, Query, Header, Request, Depends, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Optional, List
 import time
 import os
 import psutil
+import json
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from user_agents import parse as parse_ua
 from ipaddress import ip_network, ip_address
+from sqlalchemy.orm import Session
+from jose import JWTError, jwt
+
 from src.checker import check_connection, get_geoip, get_cache_stats, icmp_ping, port_scan
 from src.parser import parse_link, decode_if_base64
 from src.converter import to_clash, to_singbox, apply_modifiers
 from src.qr_utils import generate_qr_image
 from src.scraper import get_free_accounts
+from src.database import init_db, SessionLocal, User, Config
+from src.auth import verify_password, get_password_hash, create_access_token, SECRET_KEY, ALGORITHM
 
 # Setup Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -37,24 +44,59 @@ stats_counters = {
     "free_requests": 0
 }
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
 @app.middleware("http")
 async def count_requests(request, call_next):
     stats_counters["total_requests"] += 1
     response = await call_next(request)
     return response
 
-@app.get("/stats")
+class PrettyJSONResponse(Response):
+    media_type = "application/json"
+    def render(self, content: any) -> bytes:
+        return json.dumps(content, indent=2).encode("utf-8")
+
+@app.get("/stats", response_class=PrettyJSONResponse)
 def get_stats():
     """Returns the status, uptime, resource usage, and traffic stats."""
     uptime_seconds = time.time() - start_time
-    
-    # System Resources
     cpu_usage = psutil.cpu_percent(interval=None)
     ram = psutil.virtual_memory()
     
     return {
         "status": "running",
-        "version": "1.3.0",
+        "version": "1.5.0",
         "uptime_seconds": round(uptime_seconds, 2),
         "uptime_human": f"{round(uptime_seconds / 60, 2)} minutes",
         "system": {
@@ -66,6 +108,56 @@ def get_stats():
         "traffic": stats_counters,
         "cache": get_cache_stats()
     }
+
+# --- Auth Endpoints ---
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+@app.post("/register")
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    hashed_password = get_password_hash(user.password)
+    db_user = User(username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    return {"message": "User created successfully"}
+
+@app.post("/token")
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me")
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return {"username": current_user.username, "id": current_user.id}
+
+class ConfigCreate(BaseModel):
+    name: str
+    data: str
+
+@app.post("/config/save")
+def save_config(config: ConfigCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    new_config = Config(name=config.name, data=config.data, owner_id=current_user.id)
+    db.add(new_config)
+    db.commit()
+    return {"message": "Config saved", "id": new_config.id}
+
+@app.get("/config/list")
+def list_configs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return db.query(Config).filter(Config.owner_id == current_user.id).all()
+
+# --- Utility Endpoints ---
 
 @app.get("/check")
 @limiter.limit("100/3seconds")
@@ -80,34 +172,28 @@ async def check_ip(request: Request, ip: str, port: int, timeout: int = 3):
 @app.get("/ping")
 @limiter.limit("100/3seconds")
 async def ping_host(request: Request, host: str, count: int = 1):
-    """Performs an ICMP Ping to the host."""
     stats_counters["ping_requests"] += 1
     return await run_in_threadpool(icmp_ping, host, count)
 
 @app.get("/scan")
 @limiter.limit("50/3seconds")
 async def scan_ports(request: Request, host: str, ports: str = "80,443,22,8080,8443"):
-    """Scans multiple ports (comma separated)."""
     stats_counters["scan_requests"] += 1
     try:
         port_list = [int(p) for p in ports.split(",")]
-        # Limit to 10 ports max to prevent abuse
         if len(port_list) > 10:
             port_list = port_list[:10]
     except:
         raise HTTPException(status_code=400, detail="Invalid ports format")
-        
     return await run_in_threadpool(port_scan, host, port_list)
 
 @app.get("/myip")
 @limiter.limit("100/3seconds")
 def get_myip(request: Request, user_agent: Optional[str] = Header(None)):
-    """Returns the requester's IP and User-Agent info."""
     stats_counters["myip_requests"] += 1
     ip = request.client.host
     ua_string = user_agent or ""
     ua = parse_ua(ua_string)
-    
     return {
         "ip": ip,
         "browser": str(ua.browser),
@@ -119,7 +205,6 @@ def get_myip(request: Request, user_agent: Optional[str] = Header(None)):
 @app.get("/cidr")
 @limiter.limit("100/3seconds")
 def cidr_calc(request: Request, cidr: str):
-    """Calculates details for a CIDR subnet."""
     stats_counters["cidr_requests"] += 1
     try:
         network = ip_network(cidr, strict=False)
@@ -136,22 +221,18 @@ def cidr_calc(request: Request, cidr: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/free")
-@limiter.limit("10/60seconds") # Stricter limit for scraper
+@limiter.limit("10/60seconds") 
 async def free_accounts(
     request: Request, 
     target: str = "auto",
-    user_agent: Optional[str] = Header(None)
+    user_agent: Optional[str] = Header(None),
+    download: bool = Query(False)
 ):
-    """
-    Scrapes free VPN accounts from public sources and returns a subscription.
-    """
+    """Scrapes free VPN accounts."""
     stats_counters["free_requests"] += 1
-    
-    # Get links from scraper
     links = await get_free_accounts()
-    
     if not links:
-        raise HTTPException(status_code=503, detail="Unable to fetch free accounts at this time")
+        raise HTTPException(status_code=503, detail="Unable to fetch free accounts")
 
     parsed_list = []
     for link in links:
@@ -159,7 +240,6 @@ async def free_accounts(
         if parsed:
             parsed_list.append(parsed)
 
-    # Auto-detect target
     final_target = target.lower()
     if final_target == "auto":
         ua = (user_agent or "").lower()
@@ -176,7 +256,7 @@ async def free_accounts(
 
     if final_target == "clash":
         content = to_clash(parsed_list)
-        media_type = "text/yaml"
+        media_type = "application/x-yaml" if download else "text/yaml"
         filename = "free_config.yaml"
     elif final_target == "singbox":
         content = to_singbox(parsed_list)
@@ -185,10 +265,16 @@ async def free_accounts(
     else:
         raise HTTPException(status_code=400, detail="Unsupported target")
 
-    return Response(
-        content=content, 
-        media_type=media_type
-    )
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return Response(content=content, media_type=media_type, headers=headers)
+    
+    # Pretty print logic for JSON output when not downloading
+    if final_target == "singbox":
+         return PrettyJSONResponse(content=json.loads(content))
+    else:
+         return Response(content=content, media_type=media_type)
 
 @app.post("/sub")
 @limiter.limit("100/3seconds")
@@ -198,16 +284,16 @@ def subscription_endpoint(
     target: str = Body("auto", embed=True),
     download: bool = Query(False),
     full: bool = Query(False),
-    # New Filter Params
     filter_name: Optional[str] = Query(None),
     exclude_name: Optional[str] = Query(None),
     filter_protocol: Optional[str] = Query(None),
     force_sni: Optional[str] = Query(None),
     udp: Optional[bool] = Query(None),
     remove_expired: bool = Query(False),
-    
+    auto_rename: bool = Query(False),
     user_agent: Optional[str] = Header(None)
 ):
+    """Consolidated endpoint for converting configs."""
     stats_counters["sub_requests"] += 1
     decoded_data = decode_if_base64(data)
     links = decoded_data.strip().splitlines()
@@ -224,13 +310,13 @@ def subscription_endpoint(
     if not parsed_list:
         raise HTTPException(status_code=400, detail="No valid links found")
 
-    # Apply Modifiers
     modifier_options = {
         "filter_name": filter_name,
         "exclude_name": exclude_name,
         "filter_protocol": filter_protocol,
         "force_sni": force_sni,
-        "remove_expired": remove_expired
+        "remove_expired": remove_expired,
+        "auto_rename": auto_rename
     }
     if udp is not None:
         modifier_options["udp_toggle"] = udp
@@ -240,7 +326,6 @@ def subscription_endpoint(
     if not parsed_list:
         raise HTTPException(status_code=400, detail="No links remaining after filters")
 
-    # Target Detection
     final_target = target.lower()
     if final_target == "auto":
         ua = (user_agent or "").lower()
@@ -264,26 +349,26 @@ def subscription_endpoint(
         media_type = "application/json"
         filename = "config.json"
     else:
-        raise HTTPException(status_code=400, detail="Unsupported target. Use 'clash' or 'singbox'")
+        raise HTTPException(status_code=400, detail="Unsupported target")
 
     headers = {}
     if download:
         headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return Response(content=content, media_type=media_type, headers=headers)
 
-    return Response(
-        content=content, 
-        media_type=media_type,
-        headers=headers
-    )
+    # Pretty print logic for JSON output when not downloading
+    if final_target == "singbox":
+         return PrettyJSONResponse(content=json.loads(content))
+    else:
+         # For YAML, just return plain text as it is already somewhat readable
+         return Response(content=content, media_type=media_type)
 
 @app.get("/qr")
 @limiter.limit("100/3seconds")
 def get_qr(request: Request, text: str):
-    """Generates a QR code for the given text."""
     stats_counters["qr_requests"] += 1
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
-    
     img_bytes = generate_qr_image(text)
     return Response(content=img_bytes, media_type="image/png")
 
