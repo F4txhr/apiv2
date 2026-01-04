@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import os
 import logging
+import asyncio
 from src.checker import check_connection, get_geoip
 from src.parser import decode_if_base64, parse_link
 from src.converter import to_clash, to_singbox
@@ -31,22 +32,38 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     target = context.args[0]
     port = 80
-    if ":" in target:
-        target, port_str = target.split(":")
-        port = int(port_str)
     
-    status = await context.bot.loop.run_in_executor(None, check_connection, target, port)
-    geo = await get_geoip(target)
-    
-    msg = f"🔍 Check: {target}:{port}\n"
-    msg += f"Status: {status['status'].upper()}\n"
-    if status['latency_ms']:
-        msg += f"Latency: {status['latency_ms']} ms\n"
-    if geo:
-        msg += f"Location: {geo.get('city')}, {geo.get('country')}\n"
-        msg += f"ISP: {geo.get('isp')}"
+    try:
+        if ":" in target:
+            target, port_str = target.split(":")
+            port = int(port_str)
         
-    await update.message.reply_text(msg)
+        # Notify user we are checking
+        await update.message.reply_chat_action(action="typing")
+
+        loop = asyncio.get_running_loop()
+        status = await loop.run_in_executor(None, check_connection, target, port)
+        geo = await get_geoip(target)
+        
+        msg = f"🔍 *Check Result:*\n"
+        msg += f"Target: `{target}:{port}`\n"
+        msg += f"Status: *{status['status'].upper()}* "
+        msg += "✅" if status['status'] == 'open' else "❌"
+        msg += "\n"
+
+        if status.get('latency_ms'):
+            msg += f"Latency: `{status['latency_ms']} ms`\n"
+        
+        if geo:
+            msg += f"🌍 Location: {geo.get('city')}, {geo.get('country')}\n"
+            msg += f"🏢 ISP: {geo.get('isp')}"
+        else:
+            msg += "🌍 Location: Unknown"
+            
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error performing check: {str(e)}")
 
 async def free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Fetching free accounts...")
