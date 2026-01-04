@@ -7,10 +7,14 @@ This project provides a FastAPI-based service for checking IP:Port connectivity 
 - **IP Checker:** Verify if a specific TCP port is open on a host. **Now includes GeoIP information!** 🌍 (With smart caching)
 - **Smart Subscription:** Convert one or multiple VPN links (VMess, VLESS, Trojan, SS, Hysteria2, Tuic) into a consolidated subscription config.
   - **Auto Import:** Can automatically detect and decode raw Base64 subscription blobs.
-  - **Auto-Detect Format:** If `target` is not specified, it detects the requested format based on User-Agent (Clash/Mihomo vs Sing-box). 🪄
-  - **Full Config Mode:** Add `?full=true` to generate a complete configuration with Rules, DNS, and Proxy Groups (ready to use). ⚙️
+  - **Auto-Detect Format:** If `target` is not specified, it detects the requested format based on User-Agent. 🪄
+  - **Full Config Mode:** Add `?full=true` to generate a complete configuration with Rules, DNS, and Proxy Groups. ⚙️
   - **Flexible Output:** Supports direct display or file download.
+  - **Powerful Filters:** Regex name filter, exclude, force SNI, UDP toggle, expired remover.
+- **Free Account Scraper:** Automatically fetch free VPN accounts from public repositories (`/free`). 🆓
 - **QR Code Generator:** Convert any text or config link into a QR Code image. 📱
+- **Network Utilities:** Suite of tools for network diagnostics (Ping, Port Scan, CIDR, MyIP). 🛠️
+- **Secure Deployment:** Rate Limiting and auto-renewing SSL/HTTPS support via Certbot/Nginx. 🔒
 
 ## Installation
 
@@ -20,12 +24,21 @@ This method is perfect for VPS deployment (including Alibaba Cloud).
 
 1. Install Docker & Docker Compose.
 2. Clone the repository.
-3. Run:
+3. **Setup HTTPS (Optional but Recommended):**
+   - Copy `.env.example` to `.env` and edit your `DOMAIN` and `EMAIL`.
+   - Run the initialization script:
+     ```bash
+     chmod +x init-letsencrypt.sh
+     ./init-letsencrypt.sh
+     ```
+   - This will generate SSL certificates and start the server securely on port 443.
+
+4. **Run (if not using SSL script):**
    ```bash
    docker compose up -d
    ```
    
-   The API will be available at port **80** (HTTP).
+   The API will be available at port **80** (HTTP) or **443** (HTTPS) if configured.
 
 ### Option 2: Manual
 
@@ -48,104 +61,87 @@ To use a domain (e.g., `api.example.com`) instead of the VPS IP:
    - Create an **A Record** pointing `api` (or `@`) to your VPS IP address.
 
 2. **Server Setup:**
-   - Just run `docker compose up -d` as usual.
-   - The included Nginx is configured to accept requests from domains starting with `api.` (e.g. `api.yoursite.com`). Requests from other domains or direct IP will return 404.
+   - Just run the Docker steps above.
+   - The included Nginx is configured to accept requests from domains starting with `api.` (e.g. `api.yoursite.com`).
 
 ## Usage
 
-**Note:** If using Docker, the port is `80` (default HTTP), so you don't need to specify it in the URL. If using manual run, default is `8000`.
+### 1. Subscription / Convert Config (`/sub`)
 
-### 1. Check IP:Port (with GeoIP)
-
-**Endpoint:** `GET /check`
+The most powerful endpoint. Consolidates multiple links into one subscription.
 
 **Parameters:**
-- `ip`: Hostname or IP address.
-- `port`: Port number.
-- `timeout` (optional): Connection timeout in seconds (default: 3).
+- `download`: `true` (file) or `false` (text).
+- `full`: `true` (full config with rules) or `false` (proxies only).
+- `target`: `clash`, `singbox`, or `auto`.
+
+**Filters & Modifiers:**
+- `filter_name`: Regex to keep matching accounts (e.g., `Singapore`).
+- `exclude_name`: Regex to remove matching accounts (e.g., `Expired`).
+- `filter_protocol`: Keep only `vmess`, `vless`, etc.
+- `force_sni`: Overwrite SNI/Host for all accounts (e.g., `bug.com`).
+- `udp`: `true` or `false` (Force enable/disable UDP).
+- `remove_expired`: `true` (Remove accounts with YYYY-MM-DD < today).
 
 **Example:**
 ```bash
-curl "http://api.example.com/check?ip=1.1.1.1&port=53"
-```
-
-**Response:**
-```json
-{
-  "host": "1.1.1.1",
-  "port": 53,
-  "status": "open",
-  "latency_ms": 12.5,
-  "location": {
-    "country": "Australia",
-    "city": "Sydney",
-    "isp": "Cloudflare, Inc.",
-    "org": "APNIC and Cloudflare DNS Resolver project"
-  }
-}
-```
-
-### 2. Subscription / Convert Config
-
-**Endpoint:** `POST /sub`
-
-**Body:**
-- `data`: String containing one or more VPN links (separated by newlines). Supported formats: VMess, VLESS, Trojan, Shadowsocks (`ss://`), Hysteria2 (`hy2://`), Tuic (`tuic://`). **Also supports raw Base64 subscription blobs.**
-- `target`: Target format (`clash`, `singbox`, or `auto`). Default is `auto`.
-- `download`: (Optional) Set to `true` to download as file. Default is `false` (display in browser).
-- `full`: (Optional) Set to `true` to return a full ready-to-use config with Rules & DNS. Default is `false`.
-
-**Example 1: Auto-Detect (Magic Link)**
-Just put the URL in your app (Clash or Sing-box). The API will detect the app and serve the correct format.
-```bash
-curl -X POST "http://api.example.com/sub" \
-     -H "User-Agent: Clash/1.0" \
-     -d '{ "data": "ss://..." }'
-# Returns YAML
-```
-
-**Example 2: Full Config Download**
-```bash
-curl -X POST "http://api.example.com/sub?download=true&full=true" \
+curl -X POST "https://api.example.com/sub?full=true&udp=true&filter_name=Gaming" \
      -H "Content-Type: application/json" \
-     -d '{
-           "target": "clash",
-           "data": "ss://YWVz...\nvless://uuid..."
-         }'
-# Returns attachment: config.yaml with Rules, DNS, Proxy Groups
+     -d '{ "data": "ss://..." }'
 ```
 
-### 3. Generate QR Code
+### 2. Free Account Scraper (`/free`)
 
-**Endpoint:** `GET /qr`
+Get a fresh subscription of free VPN accounts.
 
-**Parameters:**
-- `text`: The text or link to convert to QR code.
-
-**Example:**
 ```bash
-# Returns a PNG image
-curl "http://api.example.com/qr?text=Hello%20World" --output qr.png
+curl "https://api.example.com/free?target=clash"
+# Returns YAML config with free accounts
 ```
 
-### 4. System Stats
+### 3. Network Utilities
 
-**Endpoint:** `GET /stats`
-
-**Example:**
+**ICMP Ping (`/ping`)**
+Real ping measurement to a host.
 ```bash
-curl "http://api.example.com/stats"
+curl "https://api.example.com/ping?host=1.1.1.1&count=3"
 ```
 
-**Response:**
-```json
-{
-  "status": "running",
-  "version": "1.0.0",
-  "uptime_seconds": 120.5,
-  "uptime_human": "2.01 minutes"
-}
+**Port Scan (`/scan`)**
+Scan multiple ports (max 10).
+```bash
+curl "https://api.example.com/scan?host=google.com&ports=80,443,22"
 ```
+
+**My IP Info (`/myip`)**
+Check your current IP and User Agent details.
+```bash
+curl "https://api.example.com/myip"
+```
+
+**CIDR Calculator (`/cidr`)**
+Get details about a subnet.
+```bash
+curl "https://api.example.com/cidr?cidr=192.168.1.0/24"
+```
+
+### 4. Check IP:Port (`/check`)
+
+Verify TCP port and get GeoIP location.
+```bash
+curl "https://api.example.com/check?ip=1.1.1.1&port=53"
+```
+
+### 5. System Stats (`/stats`)
+
+Monitor server health (CPU, RAM, Traffic).
+```bash
+curl "https://api.example.com/stats"
+```
+
+## Security
+
+Rate limiting is active: **100 requests per 3 seconds**. Exceeding this will return `429 Too Many Requests`.
 
 ## Testing
 

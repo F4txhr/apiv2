@@ -14,6 +14,7 @@ from src.checker import check_connection, get_geoip, get_cache_stats, icmp_ping,
 from src.parser import parse_link, decode_if_base64
 from src.converter import to_clash, to_singbox, apply_modifiers
 from src.qr_utils import generate_qr_image
+from src.scraper import get_free_accounts
 
 # Setup Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -32,7 +33,8 @@ stats_counters = {
     "ping_requests": 0,
     "scan_requests": 0,
     "myip_requests": 0,
-    "cidr_requests": 0
+    "cidr_requests": 0,
+    "free_requests": 0
 }
 
 @app.middleware("http")
@@ -132,6 +134,61 @@ def cidr_calc(request: Request, cidr: str):
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/free")
+@limiter.limit("10/60seconds") # Stricter limit for scraper
+async def free_accounts(
+    request: Request, 
+    target: str = "auto",
+    user_agent: Optional[str] = Header(None)
+):
+    """
+    Scrapes free VPN accounts from public sources and returns a subscription.
+    """
+    stats_counters["free_requests"] += 1
+    
+    # Get links from scraper
+    links = await get_free_accounts()
+    
+    if not links:
+        raise HTTPException(status_code=503, detail="Unable to fetch free accounts at this time")
+
+    parsed_list = []
+    for link in links:
+        parsed = parse_link(link)
+        if parsed:
+            parsed_list.append(parsed)
+
+    # Auto-detect target
+    final_target = target.lower()
+    if final_target == "auto":
+        ua = (user_agent or "").lower()
+        if "clash" in ua or "mihomo" in ua:
+            final_target = "clash"
+        elif "sing-box" in ua or "singbox" in ua or "neko" in ua:
+            final_target = "singbox"
+        else:
+            final_target = "clash"
+
+    content = ""
+    media_type = ""
+    filename = ""
+
+    if final_target == "clash":
+        content = to_clash(parsed_list)
+        media_type = "text/yaml"
+        filename = "free_config.yaml"
+    elif final_target == "singbox":
+        content = to_singbox(parsed_list)
+        media_type = "application/json"
+        filename = "free_config.json"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported target")
+
+    return Response(
+        content=content, 
+        media_type=media_type
+    )
 
 @app.post("/sub")
 @limiter.limit("100/3seconds")
