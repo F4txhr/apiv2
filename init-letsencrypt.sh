@@ -17,6 +17,10 @@ if [ -z "$EMAIL" ] || [ "$EMAIL" = "your-email@example.com" ]; then
   exit 1
 fi
 
+# Update Nginx Configuration with actual domain
+echo "### Updating Nginx configuration with domain $DOMAIN ..."
+sed -i "s/REPLACE_WITH_DOMAIN/$DOMAIN/g" nginx/default.conf
+
 data_path="./certbot"
 rsa_key_size=4096
 regex="([^www.].+)"
@@ -70,7 +74,7 @@ case "$EMAIL" in
 esac
 
 # Enable staging mode if needed
-if [ $STAGING != "0" ]; then staging_arg="--staging"; fi
+if [ "$STAGING" != "0" ]; then staging_arg="--staging"; fi
 
 docker compose run --rm --entrypoint "\
   certbot certonly --webroot -w /var/www/certbot \
