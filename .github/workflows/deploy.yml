@@ -3,7 +3,7 @@ name: Deploy to VPS
 on:
   push:
     branches:
-      - main
+      - Main
       - master
       - feature/complete-roadmap-implementation
 
