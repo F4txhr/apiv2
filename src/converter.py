@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import yaml
 import json
 import re
@@ -159,7 +159,7 @@ def apply_modifiers(proxies: List[Dict[str, Any]], options: Dict[str, Any]) -> L
 
 # --- Converters ---
 
-def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
+def to_clash(proxies: List[Dict[str, Any]], full: bool = False, groups: Optional[List[Dict[str, Any]]] = None) -> str:
     clash_proxies = []
     proxy_names = []
     
@@ -254,9 +254,32 @@ def to_clash(proxies: List[Dict[str, Any]], full: bool = False) -> str:
         import copy
         config = copy.deepcopy(CLASH_FULL_TEMPLATE)
         config["proxies"] = clash_proxies
+        
+        # Default Groups
         for group in config["proxy-groups"]:
             if group["name"] in ["PROXY", "AUTO"]:
                 group["proxies"].extend(proxy_names)
+        
+        # Custom Groups Overwrite
+        if groups:
+            # We filter out the default groups if they are redefined in 'groups'
+            new_group_names = [g["name"] for g in groups]
+            
+            # Keep default groups only if not in custom groups
+            final_groups = [g for g in config["proxy-groups"] if g["name"] not in new_group_names]
+            
+            # Add custom groups
+            for g in groups:
+                 # If 'proxies' is missing or contains 'all', inject all proxy names
+                 if "proxies" not in g or not g["proxies"]:
+                     g["proxies"] = proxy_names
+                 elif "all" in g["proxies"]:
+                     g["proxies"].remove("all")
+                     g["proxies"].extend(proxy_names)
+                 final_groups.append(g)
+            
+            config["proxy-groups"] = final_groups
+
         return yaml.dump(config, sort_keys=False)
     else:
         return yaml.dump({"proxies": clash_proxies}, sort_keys=False)

@@ -17,13 +17,64 @@ if [ -z "$EMAIL" ] || [ "$EMAIL" = "your-email@example.com" ]; then
   exit 1
 fi
 
-# Update Nginx Configuration with actual domain initially to ensure Nginx starts
-echo "### Updating Nginx configuration with domain $DOMAIN ..."
-sed -i "s/REPLACE_WITH_DOMAIN/$DOMAIN/g" nginx/default.conf
+# Function to write Nginx config
+write_nginx_config() {
+  local MODE=$1 # "http" or "https"
+  local CERT_PATH=$2 # Optional, e.g., "live/$DOMAIN"
+
+  echo "### Writing Nginx configuration for mode: $MODE ..."
+
+  cat > nginx/default.conf <<EOF
+server {
+    listen 80;
+    server_name _;
+
+    # Serve ACME challenge files
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Proxy to API
+    location / {
+        proxy_pass http://vpn-api:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+  if [ "$MODE" == "https" ]; then
+    cat >> nginx/default.conf <<EOF
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/$CERT_PATH/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/$CERT_PATH/privkey.pem;
+    
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    location / {
+        proxy_pass http://vpn-api:8000;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  fi
+}
+
+# 1. Start with HTTP-only config to ensure Nginx can start
+write_nginx_config "http"
 
 data_path="./certbot"
 rsa_key_size=4096
-regex="([^www.].+)"
 
 echo "### Starting setup for domain $DOMAIN with email $EMAIL ..."
 
@@ -53,6 +104,13 @@ docker compose run --rm --entrypoint "\
 echo
 
 echo "### Starting nginx ..."
+# We need to temporarily enable HTTPS config for the dummy cert so Nginx validates it? 
+# Actually no, Certbot needs port 80 for validation. Nginx is running on port 80.
+# But for the "dummy" step in the original script, it was creating a cert to allow Nginx to start IF Nginx was configured with SSL.
+# Since we default to HTTP-only now, Nginx starts fine without any certs.
+# We can skip the dummy cert creation logic if we are careful, but let's keep it to support the eventual switch.
+# Wait, if we start Nginx in HTTP-only mode, we don't need the dummy cert to start Nginx.
+# We only need Nginx to serve /.well-known/acme-challenge/ on port 80.
 docker compose up --force-recreate -d nginx
 echo
 
@@ -84,23 +142,44 @@ docker compose run --rm --entrypoint "\
     --rsa-key-size $rsa_key_size \
     --agree-tos \
     --force-renewal" certbot
-echo
+exit_code=$?
+
+if [ $exit_code -ne 0 ]; then
+    echo
+    echo "################################################################################"
+    echo "### ERROR: Let's Encrypt certificate generation failed!"
+    echo "### Falling back to HTTP-only mode on Port 80."
+    echo "################################################################################"
+    echo
+    write_nginx_config "http"
+    docker compose exec nginx nginx -s reload
+    echo "### Server is running in HTTP mode: http://$DOMAIN"
+    exit 1
+fi
 
 echo "### Checking for actual certificate path (handling -0001 suffix) ..."
 # Find the directory that contains the privkey.pem for the domain
-# We look in the local ./certbot/conf/live folder
-# The 'ls -d' will list directories matching the domain pattern
-# 'head -n 1' takes the first match
-ACTUAL_CERT_DIR=$(ls -d ./certbot/conf/live/$DOMAIN* | head -n 1)
-CERT_NAME=$(basename "$ACTUAL_CERT_DIR")
+ACTUAL_CERT_DIR=$(ls -d ./certbot/conf/live/$DOMAIN* 2>/dev/null | head -n 1)
 
-if [ -n "$CERT_NAME" ] && [ "$CERT_NAME" != "$DOMAIN" ]; then
-  echo "### Detected certificate suffix: $CERT_NAME. Updating Nginx config ..."
-  # Replace the original domain path with the suffixed path in nginx.conf
-  # We match /etc/letsencrypt/live/DOMAIN/ and replace with /etc/letsencrypt/live/CERT_NAME/
-  # Note: The nginx config inside the container uses /etc/letsencrypt, which maps to ./certbot/conf
-  sed -i "s|/etc/letsencrypt/live/$DOMAIN/|/etc/letsencrypt/live/$CERT_NAME/|g" nginx/default.conf
+if [ -z "$ACTUAL_CERT_DIR" ]; then
+    echo "### Error: Certificate files not found despite successful exit code."
+    echo "### Falling back to HTTP-only mode."
+    write_nginx_config "http"
+    docker compose exec nginx nginx -s reload
+    exit 1
 fi
+
+CERT_NAME=$(basename "$ACTUAL_CERT_DIR")
+echo "### Certificate found in: live/$CERT_NAME"
+
+echo "### Enabling HTTPS in Nginx ..."
+write_nginx_config "https" "live/$CERT_NAME"
 
 echo "### Reloading nginx ..."
 docker compose exec nginx nginx -s reload
+
+echo
+echo "################################################################################"
+echo "### SUCCESS: HTTPS is enabled!"
+echo "### API is available at https://$DOMAIN"
+echo "################################################################################"

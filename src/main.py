@@ -15,7 +15,11 @@ from ipaddress import ip_network, ip_address
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 
-from src.checker import check_connection, get_geoip, get_cache_stats, icmp_ping, port_scan
+from src.checker import (
+    check_connection, get_geoip, get_cache_stats, icmp_ping, port_scan, 
+    check_website_status, get_ssl_cert_info, dns_lookup, mac_vendor_lookup
+)
+from src.warp import generate_warp_plus_mock
 from src.parser import parse_link, decode_if_base64
 from src.converter import to_clash, to_singbox, apply_modifiers
 from src.qr_utils import generate_qr_image
@@ -187,6 +191,31 @@ async def scan_ports(request: Request, host: str, ports: str = "80,443,22,8080,8
         raise HTTPException(status_code=400, detail="Invalid ports format")
     return await run_in_threadpool(port_scan, host, port_list)
 
+@app.get("/check/website")
+@limiter.limit("50/3seconds")
+async def website_checker(request: Request, url: str):
+    return await check_website_status(url)
+
+@app.get("/check/ssl")
+@limiter.limit("50/3seconds")
+async def ssl_checker(request: Request, host: str, port: int = 443):
+    return await run_in_threadpool(get_ssl_cert_info, host, port)
+
+@app.get("/tools/dns")
+@limiter.limit("50/3seconds")
+async def dns_tool(request: Request, domain: str, type: str = "A"):
+    return await run_in_threadpool(dns_lookup, domain, type)
+
+@app.get("/tools/mac")
+@limiter.limit("50/3seconds")
+async def mac_tool(request: Request, mac: str):
+    return await mac_vendor_lookup(mac)
+
+@app.get("/tools/warp")
+@limiter.limit("5/60seconds")
+async def warp_tool(request: Request):
+    return await generate_warp_plus_mock()
+
 @app.get("/myip")
 @limiter.limit("100/3seconds")
 def get_myip(request: Request, user_agent: Optional[str] = Header(None)):
@@ -291,6 +320,7 @@ def subscription_endpoint(
     udp: Optional[bool] = Query(None),
     remove_expired: bool = Query(False),
     auto_rename: bool = Query(False),
+    groups: Optional[List[dict]] = Body(None),
     user_agent: Optional[str] = Header(None)
 ):
     """Consolidated endpoint for converting configs."""
@@ -341,7 +371,7 @@ def subscription_endpoint(
     filename = ""
 
     if final_target == "clash":
-        content = to_clash(parsed_list, full=full)
+        content = to_clash(parsed_list, full=full, groups=groups)
         media_type = "application/x-yaml" if download else "text/yaml"
         filename = "config.yaml"
     elif final_target == "singbox":

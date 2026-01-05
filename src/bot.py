@@ -3,6 +3,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 import os
 import logging
 import asyncio
+import io
 from src.checker import check_connection, get_geoip
 from src.parser import decode_if_base64, parse_link
 from src.converter import to_clash, to_singbox
@@ -79,10 +80,11 @@ async def free(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     config = to_clash(parsed)
     
-    with open("free_config.yaml", "w") as f:
-        f.write(config)
-        
-    await update.message.reply_document(document=open("free_config.yaml", "rb"), caption="Here is your free subscription!")
+    # Use BytesIO instead of file
+    bio = io.BytesIO(config.encode('utf-8'))
+    bio.name = "free_config.yaml"
+    
+    await update.message.reply_document(document=bio, caption="Here is your free subscription!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = ""
@@ -112,11 +114,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Convert to Clash (Default)
         clash_config = to_clash(parsed_list)
-        with open("converted.yaml", "w") as f:
-            f.write(clash_config)
-            
+        
+        bio = io.BytesIO(clash_config.encode('utf-8'))
+        bio.name = "converted.yaml"
+
         await update.message.reply_document(
-            document=open("converted.yaml", "rb"), 
+            document=bio, 
             caption=f"✅ Converted {len(parsed_list)} accounts to Clash format."
         )
         

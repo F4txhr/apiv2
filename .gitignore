@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+.env
+users.db
+certbot/conf/
+certbot/www/
+certbot/logs/
+npm_output.log
+bun_output.txt
