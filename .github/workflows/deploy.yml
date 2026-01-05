@@ -1,0 +1,33 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - feature/complete-roadmap-implementation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          # port: ${{ secrets.VPS_PORT }} # Optional, default is 22
+          script: |
+            cd ~/apiv2  # <-- Ganti dengan path folder Anda di VPS
+            git pull origin feature/complete-roadmap-implementation
+            
+            # Rebuild only if necessary, but forcing build ensures updates apply
+            docker compose down
+            docker compose up -d --build
+            
+            # Prune unused images to save space
+            docker image prune -f
