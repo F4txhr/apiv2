@@ -11,8 +11,8 @@
 
 const CONFIG = {
   API_URL: "http://api.vortex-xx.biz.id/stats", // Ganti dengan URL API Anda
-  TELEGRAM_BOT_TOKEN: 8226873424:AAHpLcqrc2hgEXo1SV7DRbenjJH9dxa0YQc,         // Token Bot Telegram untuk Alert
-  TELEGRAM_CHAT_ID: 5361605327,             // ID Akun Telegram Anda untuk terima alert
+  TELEGRAM_BOT_TOKEN: "YOUR_BOT_TOKEN",         // Token Bot Telegram untuk Alert
+  TELEGRAM_CHAT_ID: "YOUR_CHAT_ID",             // ID Akun Telegram Anda untuk terima alert
   ALERT_THRESHOLD_MS: 5000                      // Alert jika latency > 5 detik
 };
 

@@ -14,3 +14,4 @@ ping3
 user-agents
 python-telegram-bot
 dnspython
+qrcode[pil]
