@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Response, Body, Query, Header, Request, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
@@ -32,6 +33,15 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Setup CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 start_time = time.time()
 
@@ -97,6 +107,7 @@ def get_stats():
     uptime_seconds = time.time() - start_time
     cpu_usage = psutil.cpu_percent(interval=None)
     ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
     
     return {
         "status": "running",
@@ -107,7 +118,10 @@ def get_stats():
             "cpu_percent": cpu_usage,
             "ram_percent": ram.percent,
             "ram_used_mb": round(ram.used / 1024 / 1024, 2),
-            "ram_total_mb": round(ram.total / 1024 / 1024, 2)
+            "ram_total_mb": round(ram.total / 1024 / 1024, 2),
+            "disk_percent": disk.percent,
+            "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 2),
+            "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 2)
         },
         "traffic": stats_counters,
         "cache": get_cache_stats()

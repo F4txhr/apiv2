@@ -4,6 +4,7 @@ import os
 import logging
 import asyncio
 import io
+import httpx
 from src.checker import check_connection, get_geoip
 from src.parser import decode_if_base64, parse_link
 from src.converter import to_clash, to_singbox
@@ -65,6 +66,30 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error performing check: {str(e)}")
+
+async def monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fetches system stats from the local API."""
+    try:
+        # We access the API container internally via Docker network
+        url = "http://vpn-api:8000/stats"
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                sys = data['system']
+                msg = (
+                    f"📊 *System Monitor*\n"
+                    f"✅ Status: *Online*\n"
+                    f"⏱️ Uptime: `{data['uptime_human']}`\n"
+                    f"💻 CPU: `{sys['cpu_percent']}%`\n"
+                    f"🧠 RAM: `{sys['ram_percent']}%` ({sys['ram_used_mb']}/{sys['ram_total_mb']} MB)\n"
+                    f"🔄 Requests: `{data['traffic']['total_requests']}`"
+                )
+                await update.message.reply_text(msg, parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"⚠️ API Error: {resp.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Monitor Error: {str(e)}")
 
 async def free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Fetching free accounts...")
@@ -135,6 +160,7 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("check", check))
+    app.add_handler(CommandHandler("monitor", monitor))
     app.add_handler(CommandHandler("free", free))
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     
