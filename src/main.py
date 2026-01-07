@@ -21,6 +21,7 @@ from src.checker import (
     check_website_status, get_ssl_cert_info, dns_lookup, mac_vendor_lookup
 )
 from src.warp import generate_warp_plus_mock
+from src.downloader import get_media_info
 from src.parser import parse_link, decode_if_base64
 from src.converter import to_clash, to_singbox, apply_modifiers
 from src.qr_utils import generate_qr_image
@@ -229,6 +230,12 @@ async def mac_tool(request: Request, mac: str):
 @limiter.limit("5/60seconds")
 async def warp_tool(request: Request):
     return await generate_warp_plus_mock()
+
+@app.get("/tools/media")
+@limiter.limit("5/60seconds")
+async def media_downloader(request: Request, url: str):
+    """Downloads social media content (Video/Audio/Metadata)."""
+    return await run_in_threadpool(get_media_info, url)
 
 @app.get("/myip")
 @limiter.limit("100/3seconds")

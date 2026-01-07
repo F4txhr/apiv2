@@ -6,6 +6,7 @@ import asyncio
 import io
 import httpx
 from src.checker import check_connection, get_geoip
+from src.downloader import get_media_info
 from src.parser import decode_if_base64, parse_link
 from src.converter import to_clash, to_singbox
 from src.scraper import get_free_accounts
@@ -91,6 +92,67 @@ async def monitor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Monitor Error: {str(e)}")
 
+async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Downloads media info from URL."""
+    if not context.args:
+        await update.message.reply_text("Usage: /dl <url>")
+        return
+        
+    url = context.args[0]
+    await update.message.reply_chat_action(action="typing")
+    
+    try:
+        # We call the function directly since we are in the same container, 
+        # but running in executor to avoid blocking async loop
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(None, get_media_info, url)
+        
+        if info['status'] == 'error':
+            await update.message.reply_text(f"❌ Error: {info['message']}")
+            return
+            
+        # Format Message
+        caption = f"🎬 *{info.get('title', 'Unknown Title')}*\n\n"
+        caption += f"👤 *{info.get('uploader', 'Unknown Author')}*\n"
+        caption += f"👁️ Views: `{info.get('view_count', 0)}` | ❤️ Likes: `{info.get('like_count', 0)}`\n"
+        caption += f"⏱️ Duration: `{info.get('duration')}s`\n"
+        caption += f"🏷️ Platform: #{info.get('platform')}\n"
+        
+        # Send Thumbnail if available
+        if info.get('thumbnail'):
+            await update.message.reply_photo(photo=info['thumbnail'], caption=caption, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(caption, parse_mode="Markdown")
+            
+        # Send Download Links (Best few)
+        formats = info.get('formats', [])
+        # Filter for video/audio
+        best_formats = []
+        for f in formats:
+            if f.get('ext') == 'mp4' and f.get('acodec') != 'none' and f.get('vcodec') != 'none':
+                 best_formats.append(f)
+        
+        # Sort by resolution (simple heuristic)
+        best_formats.sort(key=lambda x: x.get('filesize') or 0, reverse=True)
+        top_3 = best_formats[:3]
+        
+        if not top_3 and formats:
+             # Fallback to whatever is there
+             top_3 = formats[:3]
+
+        links_msg = "⬇️ *Download Links:*\n"
+        for fmt in top_3:
+            res = fmt.get('resolution', 'Unknown')
+            ext = fmt.get('ext', '')
+            url = fmt.get('url', '')
+            size = round((fmt.get('filesize') or 0) / 1024 / 1024, 2)
+            links_msg += f"• [{res} ({ext}) - {size}MB]({url})\n"
+            
+        await update.message.reply_text(links_msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
 async def free(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Fetching free accounts...")
     accounts = await get_free_accounts()
@@ -162,6 +224,7 @@ def main():
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("monitor", monitor))
     app.add_handler(CommandHandler("free", free))
+    app.add_handler(CommandHandler("dl", download_media))
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     
     app.run_polling()
